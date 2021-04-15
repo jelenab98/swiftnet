@@ -24,7 +24,7 @@ class SemsegModel(nn.Module):
         self.upsample_logits = upsample_logits
         self.multiscale_factors = multiscale_factors
 
-    def forward(self, image, target_size, image_size):
+    def forward(self, image, target_size=(1024, 2048), image_size=(1024, 2048)):
         features, additional = self.backbone(image)
         logits = self.logits.forward(features)
         if (not self.training) or self.upsample_logits:

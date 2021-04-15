@@ -15,11 +15,12 @@ from evaluation import StorePreds
 
 from models.util import get_n_params
 
-root = Path.home() / Path('datasets/Cityscapes')
+root = Path('/mnt/data/City')
 path = os.path.abspath(__file__)
 dir_path = os.path.dirname(path)
 
 evaluating = False
+pruning = True
 random_crop_size = 768
 
 scale = 1
@@ -37,8 +38,13 @@ target_size_crops_feats = (random_crop_size // 4, random_crop_size // 4)
 target_size = (2048, 1024)
 target_size_feats = (2048 // 4, 1024 // 4)
 
-eval_each = 4
+eval_each = 2
 
+lr = 4e-4
+lr_min = 1e-6
+fine_tune_factor = 4
+weight_decay = 1e-4
+epochs = 20
 
 trans_val = Compose(
     [Open(),
@@ -64,16 +70,10 @@ dataset_val = Cityscapes(root, transforms=trans_val, subset='val')
 
 resnet = resnet18(pretrained=True, efficient=False, mean=mean, std=std, scale=scale)
 model = SemsegModel(resnet, num_classes)
-if evaluating:
-    model.load_state_dict(torch.load('weights/rn18_single_scale/model_best.pt'))
-else:
-    model.criterion = SemsegCrossEntropy(num_classes=num_classes, ignore_id=ignore_id)
-    lr = 4e-4
-    lr_min = 1e-6
-    fine_tune_factor = 4
-    weight_decay = 1e-4
-    epochs = 250
 
+if pruning:
+    model.load_state_dict(torch.load('weights/rn18_single_scale/model_best.pt'))
+    model.criterion = SemsegCrossEntropy(num_classes=num_classes, ignore_id=ignore_id)
     optim_params = [
         {'params': model.random_init_params(), 'lr': lr, 'weight_decay': weight_decay},
         {'params': model.fine_tune_params(), 'lr': lr / fine_tune_factor,
@@ -82,8 +82,22 @@ else:
 
     optimizer = optim.Adam(optim_params, betas=(0.9, 0.99))
     lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, lr_min)
+else:
+    if evaluating:
+        model.load_state_dict(torch.load('weights/rn18_single_scale/model_best.pt'))
+    else:
+        model.criterion = SemsegCrossEntropy(num_classes=num_classes, ignore_id=ignore_id)
 
-batch_size = 14
+        optim_params = [
+            {'params': model.random_init_params(), 'lr': lr, 'weight_decay': weight_decay},
+            {'params': model.fine_tune_params(), 'lr': lr / fine_tune_factor,
+             'weight_decay': weight_decay / fine_tune_factor},
+        ]
+
+        optimizer = optim.Adam(optim_params, betas=(0.9, 0.99))
+        lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, lr_min)
+
+batch_size = 10
 print(f'Batch size: {batch_size}')
 
 if evaluating:
@@ -110,3 +124,16 @@ if evaluating:
     to_color = ColorizeLabels(color_info)
     to_image = Compose([DenormalizeTh(scale, mean, std), Numpy(), to_color])
     eval_observers = [StorePreds(store_dir, to_image, to_color)]
+
+
+def reset_optimizer():
+
+    optim_params = [
+        {'params': model.random_init_params(), 'lr': lr, 'weight_decay': weight_decay},
+        {'params': model.fine_tune_params(), 'lr': lr / fine_tune_factor,
+         'weight_decay': weight_decay / fine_tune_factor},
+    ]
+
+    optimizer = optim.Adam(optim_params, betas=(0.9, 0.99))
+    lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, lr_min)
+    return optimizer, lr_scheduler

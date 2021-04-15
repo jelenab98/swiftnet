@@ -60,17 +60,23 @@ class _Upsample(nn.Module):
         self.only_skip = only_skip
         self.detach_skip = detach_skip
         warnings.warn(f'\tUsing skips: {self.use_skip} (only skips: {self.only_skip})', UserWarning)
+        self.fixed_size = fixed_size
+        """
         self.upsampling_method = upsample
         if fixed_size is not None:
             self.upsampling_method = lambda x, size: F.interpolate(x, mode='nearest', size=fixed_size)
             warnings.warn(f'Fixed upsample size', UserWarning)
+        """
 
     def forward(self, x, skip):
         skip = self.bottleneck.forward(skip)
         if self.detach_skip:
             skip = skip.detach()
         skip_size = skip.size()[2:4]
-        x = self.upsampling_method(x, skip_size)
+        if self.fixed_size is not None:
+            x = F.interpolate(x, size=self.fixed_size, mode="nearest")
+        else:
+            x = F.interpolate(x, size=skip_size, mode="bilinear", align_corners=False)
         if self.use_skip:
             x = x + skip
         x = self.blend_conv.forward(x)
@@ -85,17 +91,23 @@ class _UpsampleBlend(nn.Module):
         self.use_skip = use_skip
         self.detach_skip = detach_skip
         warnings.warn(f'Using skip connections: {self.use_skip}', UserWarning)
+        self.fixed_size = fixed_size
+        """
         self.upsampling_method = upsample
         if fixed_size is not None:
             self.upsampling_method = lambda x, size: F.interpolate(x, mode='nearest', size=fixed_size)
             warnings.warn(f'Fixed upsample size', UserWarning)
+        """
 
     def forward(self, x, skip):
         if self.detach_skip:
             warnings.warn(f'Detaching skip connection {skip.shape[2:4]}', UserWarning)
             skip = skip.detach()
         skip_size = skip.size()[-2:]
-        x = self.upsampling_method(x, skip_size)
+        if self.fixed_size is not None:
+            x = F.interpolate(x, size=self.fixed_size, mode="nearest")
+        else:
+            x = F.interpolate(x, size=skip_size, mode="bilinear", align_corners=False)
         if self.use_skip:
             x = x + skip
         x = self.blend_conv.forward(x)
@@ -113,10 +125,12 @@ class SpatialPyramidPooling(nn.Module):
             ref = min(self.fixed_size)
             self.grids = list(filter(lambda x: x <= ref, self.grids))
         self.square_grid = square_grid
+        """
         self.upsampling_method = upsample
         if self.fixed_size is not None:
             self.upsampling_method = lambda x, size: F.interpolate(x, mode='nearest', size=fixed_size)
             warnings.warn(f'Fixed upsample size', UserWarning)
+        """
         self.spp = nn.Sequential()
         self.spp.add_module('spp_bn', _BNReluConv(num_maps_in, bt_size, k=1, bn_momentum=bn_momentum,
                                                   batch_norm=use_bn and starts_with_bn))
@@ -147,8 +161,10 @@ class SpatialPyramidPooling(nn.Module):
             else:
                 x_pooled = F.adaptive_avg_pool2d(x, self.grids[i - 1])
             level = self.spp[i].forward(x_pooled)
-
-            level = self.upsampling_method(level, target_size)
+            if self.fixed_size is not None:
+                level = F.interpolate(level, size=self.fixed_size, mode="nearest")
+            else:
+                level = F.interpolate(level, size=target_size, mode="bilinear", align_corners=False)
             levels.append(level)
 
         x = torch.cat(levels, 1)
