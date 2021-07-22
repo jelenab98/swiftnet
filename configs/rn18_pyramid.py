@@ -1,26 +1,31 @@
-import torch
-import torch.nn as nn
-from torch.utils.data import DataLoader
 from torchvision.transforms import Compose
-import torch.optim as optim
+from torch.utils.data import DataLoader
 from pathlib import Path
-import os
+
+import torch.optim as optim
+import torch.nn as nn
 import numpy as np
+import torch
+import os
 
-from models.semseg import SemsegModel
-from models.resnet.resnet_pyramid import *
 from models.loss import BoundaryAwareFocalLoss
-from data.transform import *
+from models.resnet.resnet_pyramid import *
 from data.cityscapes import Cityscapes
-from evaluation import StorePreds
-
+from models.semseg import SemsegModel
 from models.util import get_n_params
+from data.transform import *
+# from evaluation import StorePreds
 
 path = os.path.abspath(__file__)
 dir_path = os.path.dirname(path)
-root = Path.home() / Path('datasets/Cityscapes')
+root = Path('/mnt/data/City')
 
 evaluating = False
+pruning = True
+is_34 = False
+prune_mode = "rewind"
+pyramid = True
+
 random_crop_size = 768
 
 scale = 1
@@ -38,11 +43,21 @@ ostride = 4
 target_size_crops = (random_crop_size, random_crop_size)
 target_size_crops_feats = (random_crop_size // ostride, random_crop_size // ostride)
 
-eval_each = 4
+eval_each = 2
 dist_trans_bins = (16, 64, 128)
 dist_trans_alphas = (8., 4., 2., 1.)
 target_size = (2048, 1024)
 target_size_feats = (2048 // ostride, 1024 // ostride)
+
+lr = 4e-4
+lr_min = 1e-6
+fine_tune_factor = 4
+weight_decay = 1e-4
+epochs = 75
+pruning_percentages = [0.05, 0.05,
+                       0.05, 0.05,
+                       0.05, 0.05,
+                       0.05, 0.05]
 
 trans_val = Compose(
     [Open(),
@@ -74,8 +89,11 @@ backbone = resnet18(pretrained=True,
                     std=std,
                     k_bneck=1,
                     output_stride=ostride,
-                    efficient=True)
+                    efficient=False)
 model = SemsegModel(backbone, num_classes, k=1, bias=True)
+if pruning:
+    model.load_state_dict(torch.load('weights/rn18_pyramid/model_best.pt'), strict=False)
+
 if evaluating:
     model.load_state_dict(torch.load('weights/rn18_pyramid/model_best.pt'), strict=False)
 else:
@@ -88,12 +106,6 @@ for m in model.modules():
 print(f'Num BN layers: {bn_count}')
 
 if not evaluating:
-    lr = 4e-4
-    lr_min = 1e-6
-    fine_tune_factor = 4
-    weight_decay = 1e-4
-    epochs = 250
-
     optim_params = [
         {'params': model.random_init_params(), 'lr': lr, 'weight_decay': weight_decay},
         {'params': model.fine_tune_params(), 'lr': lr / fine_tune_factor,
@@ -103,11 +115,11 @@ if not evaluating:
     optimizer = optim.Adam(optim_params, betas=(0.9, 0.99))
     lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, lr_min)
 
-batch_size = bs = 14
+batch_size = bs = 10
 print(f'Batch size: {bs}')
-nw = 4
+nw = 2
 
-loader_val = DataLoader(dataset_val, batch_size=1, collate_fn=custom_collate, num_workers=nw)
+loader_val = DataLoader(dataset_val, batch_size=1, collate_fn=custom_collate)
 if evaluating:
     loader_train = DataLoader(dataset_train, batch_size=1, collate_fn=custom_collate, num_workers=nw)
 else:
@@ -127,4 +139,31 @@ if evaluating:
         os.makedirs(store_dir + d, exist_ok=True)
     to_color = ColorizeLabels(color_info)
     to_image = Compose([Numpy(), to_color])
-    eval_observers = [StorePreds(store_dir, to_image, to_color)]
+    #eval_observers = [StorePreds(store_dir, to_image, to_color)]
+
+
+def reset_optimizer(model, lr=4e-4):
+    optim_params = [
+        {'params': model.random_init_params(), 'lr': lr, 'weight_decay': weight_decay},
+        {'params': model.fine_tune_params(), 'lr': lr / fine_tune_factor,
+         'weight_decay': weight_decay / fine_tune_factor},
+    ]
+    optimizer = optim.Adam(optim_params, betas=(0.9, 0.99))
+    lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, lr_min)
+    return optimizer, lr_scheduler
+
+
+def get_initial_model():
+    backbone = resnet18(pretrained=True,
+                        pyramid_levels=num_levels,
+                        k_upsample=3,
+                        scale=scale,
+                        mean=mean,
+                        std=std,
+                        k_bneck=1,
+                        output_stride=ostride,
+                        efficient=False)
+    model_tmp = SemsegModel(backbone, num_classes, k=1, bias=True)
+    model_tmp.load_state_dict(torch.load('weights/rn18_pyramid/model_best.pt'), strict=False)
+    model_tmp.criterion = BoundaryAwareFocalLoss(gamma=.5, num_classes=num_classes, ignore_id=ignore_id)
+    return model_tmp

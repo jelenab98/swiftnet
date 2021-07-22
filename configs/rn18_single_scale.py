@@ -1,19 +1,20 @@
-import torch
-from torch.utils.data import DataLoader
 from torchvision.transforms import Compose
-import torch.optim as optim
+from torch.utils.data import DataLoader
 from pathlib import Path
+
+import torch.optim as optim
 import numpy as np
+import torch
 import os
 
-from models.semseg import SemsegModel
 from models.resnet.resnet_single_scale import *
 from models.loss import SemsegCrossEntropy
-from data.transform import *
 from data.cityscapes import Cityscapes
-from evaluation import StorePreds
-
+from models.semseg import SemsegModel
 from models.util import get_n_params
+from evaluation import StorePreds
+from data.transform import *
+
 
 root = Path('/mnt/data/City')
 path = os.path.abspath(__file__)
@@ -21,6 +22,10 @@ dir_path = os.path.dirname(path)
 
 evaluating = False
 pruning = True
+prune_mode = "rewind"
+is_34 = False
+pyramid = False
+
 random_crop_size = 768
 
 scale = 1
@@ -44,7 +49,11 @@ lr = 4e-4
 lr_min = 1e-6
 fine_tune_factor = 4
 weight_decay = 1e-4
-epochs = 20
+epochs = 50
+pruning_percentages = [0.05, 0.05,
+                       0.05, 0.05,
+                       0, 0,
+                       0, 0]
 
 trans_val = Compose(
     [Open(),
@@ -73,7 +82,12 @@ model = SemsegModel(resnet, num_classes)
 
 if pruning:
     model.load_state_dict(torch.load('weights/rn18_single_scale/model_best.pt'))
+
+if evaluating:
+    model.load_state_dict(torch.load('weights/rn18_single_scale/model_best.pt'))
+else:
     model.criterion = SemsegCrossEntropy(num_classes=num_classes, ignore_id=ignore_id)
+
     optim_params = [
         {'params': model.random_init_params(), 'lr': lr, 'weight_decay': weight_decay},
         {'params': model.fine_tune_params(), 'lr': lr / fine_tune_factor,
@@ -82,20 +96,6 @@ if pruning:
 
     optimizer = optim.Adam(optim_params, betas=(0.9, 0.99))
     lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, lr_min)
-else:
-    if evaluating:
-        model.load_state_dict(torch.load('weights/rn18_single_scale/model_best.pt'))
-    else:
-        model.criterion = SemsegCrossEntropy(num_classes=num_classes, ignore_id=ignore_id)
-
-        optim_params = [
-            {'params': model.random_init_params(), 'lr': lr, 'weight_decay': weight_decay},
-            {'params': model.fine_tune_params(), 'lr': lr / fine_tune_factor,
-             'weight_decay': weight_decay / fine_tune_factor},
-        ]
-
-        optimizer = optim.Adam(optim_params, betas=(0.9, 0.99))
-        lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, lr_min)
 
 batch_size = 10
 print(f'Batch size: {batch_size}')
@@ -117,7 +117,7 @@ print(f'Num params: {total_params:,} = {ran_params:,}(random init) + {ft_params:
 print(f'SPP params: {spp_params:,}')
 
 if evaluating:
-    eval_loaders = [(loader_val, 'val'), (loader_train, 'train')]
+    eval_loaders = [(loader_val, 'val')]  # , (loader_train, 'train')]
     store_dir = f'{dir_path}/out/'
     for d in ['', 'val', 'train', 'training']:
         os.makedirs(store_dir + d, exist_ok=True)
@@ -126,8 +126,7 @@ if evaluating:
     eval_observers = [StorePreds(store_dir, to_image, to_color)]
 
 
-def reset_optimizer():
-
+def reset_optimizer(model, lr=4e-4):
     optim_params = [
         {'params': model.random_init_params(), 'lr': lr, 'weight_decay': weight_decay},
         {'params': model.fine_tune_params(), 'lr': lr / fine_tune_factor,
@@ -137,3 +136,11 @@ def reset_optimizer():
     optimizer = optim.Adam(optim_params, betas=(0.9, 0.99))
     lr_scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, epochs, lr_min)
     return optimizer, lr_scheduler
+
+
+def get_initial_model():
+    tmp_resnet = resnet18(pretrained=True, efficient=False, mean=mean, std=std, scale=scale)
+    tmp_model = SemsegModel(tmp_resnet, num_classes)
+    tmp_model.load_state_dict(torch.load('weights/rn18_single_scale/model_best.pt'))
+    tmp_model.criterion = SemsegCrossEntropy(num_classes=num_classes, ignore_id=ignore_id)
+    return tmp_model

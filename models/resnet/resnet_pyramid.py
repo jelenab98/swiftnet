@@ -120,7 +120,7 @@ class ResNet(nn.Module):
     def __init__(self, block, layers, *, num_features=128, pyramid_levels=3, use_bn=True, k_bneck=1, k_upsample=3,
                  efficient=False, upsample_skip=True, mean=(73.1584, 82.9090, 72.3924),
                  std=(44.9149, 46.1529, 45.3192), scale=1, detach_upsample_skips=(), detach_upsample_in=False,
-                 align_corners=None, pyramid_subsample='bicubic', target_size=None,
+                 align_corners=None, pyramid_subsample='bilinear', target_size=None,
                  output_stride=4, **kwargs):
         self.inplanes = 64
         self.efficient = efficient
@@ -249,7 +249,8 @@ class ResNet(nn.Module):
             x = x.detach()
         for i, (sk, blend) in enumerate(zip(skips[1:], self.upsample_blends)):
             x = blend(x, sum(sk))
-        return x, additional
+#        return x, additional
+        return x
 
     def _load_from_state_dict(self, state_dict, prefix, local_metadata, strict,
                               missing_keys, unexpected_keys, error_msgs):
